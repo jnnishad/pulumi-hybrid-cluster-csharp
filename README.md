@@ -63,3 +63,7 @@ docs/architecture.md              Diagram + design rationale
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- JN -->
+
+<!-- JN -->
