@@ -1,0 +1,14 @@
+name: hybrid-cluster
+runtime: dotnet
+description: >
+  Cluster API-based Kubernetes cluster with its control plane on Azure
+  and worker nodes on Hetzner Cloud, provisioned end-to-end with Pulumi/C#.
+config:
+  hybrid-cluster:azureLocation:
+    default: westeurope
+  hybrid-cluster:clusterName:
+    default: hybrid-prod
+  hybrid-cluster:hetznerWorkerCount:
+    default: "4"
+  hybrid-cluster:hetznerServerType:
+    default: cpx41

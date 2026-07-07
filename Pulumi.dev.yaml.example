@@ -1,0 +1,9 @@
+config:
+  hybrid-cluster:azureLocation: westeurope
+  hybrid-cluster:clusterName: hybrid-dev
+  hybrid-cluster:hetznerWorkerCount: "2"
+  hybrid-cluster:hetznerServerType: cpx31
+  azure-native:location: westeurope
+  # secrets, set via `pulumi config set --secret hcloudToken <token>`
+  hybrid-cluster:hcloudToken:
+    secure: <use `pulumi config set --secret` — do not commit a real value>

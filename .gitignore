@@ -1,0 +1,7 @@
+bin/
+obj/
+*.user
+Pulumi.*.yaml
+!Pulumi.yaml
+!Pulumi.dev.yaml.example
+.pulumi/
