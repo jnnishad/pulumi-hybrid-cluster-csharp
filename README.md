@@ -63,12 +63,25 @@ docs/architecture.md              Diagram + design rationale
 ## Status
 
 CI (`dotnet build`) now runs on every push -- it wasn't wired up
-initially, and would have caught a real bug sooner: the `Cluster`
-custom resource's `controlPlaneRef` pointed at a `KubeadmControlPlane`
-named `{name}-control-plane` that nothing in the program ever actually
-created, so Cluster API had a dangling reference it could never
-reconcile. Fixed by adding the missing `KubeadmControlPlane` and its
-backing `AzureMachineTemplate` in `ClusterApiWorkloadCluster.cs`.
+initially, and it's caught two real bugs since:
+
+1. The `Cluster` custom resource's `controlPlaneRef` pointed at a
+   `KubeadmControlPlane` named `{name}-control-plane` that nothing in
+   the program ever actually created, so Cluster API had a dangling
+   reference it could never reconcile. Fixed by adding the missing
+   `KubeadmControlPlane` and its backing `AzureMachineTemplate`.
+2. That same fix originally applied the CAPI resources by hand-writing
+   each one against `Pulumi.Kubernetes.ApiExtensions.CustomResourceArgs`
+   with a guessed property surface (`ApiVersion`/`Kind`/`OtherFields` as
+   settable members). That type doesn't actually expose those as
+   writable properties -- `dotnet build` failed with ten compiler
+   errors (`CustomResourceArgs` is abstract, `ApiVersion`/`Kind` are
+   read-only, no `OtherFields`). Rewritten in `ClusterApiWorkloadCluster.cs`
+   to apply the CAPI manifests as plain YAML through
+   `Pulumi.Kubernetes.Yaml.ConfigGroup`, which is the documented,
+   supported path for arbitrary/CRD-backed resources in the C# SDK.
+   No dotnet toolchain is available in this environment to compile
+   locally, so this fix is also unverified until the next CI run confirms it.
 
 ## License
 

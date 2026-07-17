@@ -1,8 +1,9 @@
-using System.Collections.Generic;
 using Pulumi;
 using Kubernetes = Pulumi.Kubernetes;
 using Core = Pulumi.Kubernetes.Core.V1;
-using ApiExtensions = Pulumi.Kubernetes.ApiExtensions;
+using CoreInputs = Pulumi.Kubernetes.Types.Inputs.Core.V1;
+using MetaInputs = Pulumi.Kubernetes.Types.Inputs.Meta.V1;
+using Yaml = Pulumi.Kubernetes.Yaml;
 
 namespace HybridCluster
 {
@@ -14,6 +15,17 @@ namespace HybridCluster
     /// job here is just to get the desired-state manifests applied, the
     /// same as `kubectl apply -f cluster.yaml` would, but versioned and
     /// diffed like everything else in this stack.
+    ///
+    /// Status: earlier revisions of this file hand-wrote each CR through
+    /// Pulumi.Kubernetes.ApiExtensions.CustomResourceArgs, guessing at a
+    /// property surface (ApiVersion/Kind/OtherFields as settable members)
+    /// that doesn't actually exist on that type -- real `dotnet build` in
+    /// CI caught it with ten compiler errors (CustomResourceArgs is
+    /// abstract, ApiVersion/Kind are read-only, there's no OtherFields).
+    /// Rewritten to apply plain YAML manifests via Pulumi.Kubernetes.Yaml.
+    /// ConfigGroup instead, which is the documented, supported way to get
+    /// arbitrary/CRD-backed resources like CAPI's into a cluster from C#
+    /// without generating a full typed SDK for the CAPI CRDs.
     /// </summary>
     public class ClusterApiWorkloadCluster
     {
@@ -28,9 +40,9 @@ namespace HybridCluster
         {
             var providerOpts = new CustomResourceOptions { Provider = managementClusterProvider };
 
-            var hcloudSecret = new Core.Secret($"{name}-hcloud-token", new Core.SecretArgs
+            var hcloudSecret = new Core.Secret($"{name}-hcloud-token", new CoreInputs.SecretArgs
             {
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs
+                Metadata = new MetaInputs.ObjectMetaArgs
                 {
                     Name = "hetzner-token",
                     Namespace = "default",
@@ -41,178 +53,106 @@ namespace HybridCluster
                 },
             }, providerOpts);
 
-            var cluster = new ApiExtensions.CustomResource($"{name}-cluster", new ApiExtensions.CustomResourceArgs
+            // Cluster: top-level CAPI object. controlPlaneRef and
+            // infrastructureRef point at the KubeadmControlPlane and
+            // AzureCluster manifests applied below -- previously the
+            // control-plane side of this reference was never created,
+            // leaving CAPI with a dangling reference it could never
+            // reconcile. controlPlaneMachineTemplate/controlPlane below
+            // close that gap.
+            var clusterManifest = new Yaml.ConfigGroup($"{name}-cluster", new Yaml.ConfigGroupArgs
             {
-                ApiVersion = "cluster.x-k8s.io/v1beta1",
-                Kind = "Cluster",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = name },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["clusterNetwork"] = new Dictionary<string, object>
-                        {
-                            ["pods"] = new Dictionary<string, object> { ["cidrBlocks"] = new[] { "192.168.0.0/16" } },
-                        },
-                        ["controlPlaneRef"] = new Dictionary<string, object>
-                        {
-                            ["apiVersion"] = "controlplane.cluster.x-k8s.io/v1beta1",
-                            ["kind"] = "KubeadmControlPlane",
-                            ["name"] = $"{name}-control-plane",
-                        },
-                        ["infrastructureRef"] = new Dictionary<string, object>
-                        {
-                            ["apiVersion"] = "infrastructure.cluster.x-k8s.io/v1beta1",
-                            ["kind"] = "AzureCluster",
-                            ["name"] = $"{name}-azure",
-                        },
-                    },
-                },
-            }, providerOpts);
-
-            var azureCluster = new ApiExtensions.CustomResource($"{name}-azure-cluster", new ApiExtensions.CustomResourceArgs
-            {
-                ApiVersion = "infrastructure.cluster.x-k8s.io/v1beta1",
-                Kind = "AzureCluster",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-azure" },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["location"] = azureLocation,
-                        ["resourceGroup"] = $"{name}-workload-rg",
-                        ["networkSpec"] = new Dictionary<string, object>
-                        {
-                            ["vnet"] = new Dictionary<string, object> { ["name"] = $"{name}-vnet" },
-                        },
-                    },
-                },
-            }, providerOpts);
-
-            // These two resources were previously missing entirely: the
-            // Cluster CR above sets controlPlaneRef to a KubeadmControlPlane
-            // named "{name}-control-plane" that nothing ever created, so
-            // CAPI had a dangling reference it could never reconcile.
-            // Control-plane machines run on Azure (via CAPZ), same as the
-            // management cluster itself -- workers are the Hetzner side,
-            // declared further down.
-            var controlPlaneMachineTemplate = new ApiExtensions.CustomResource($"{name}-control-plane-template", new ApiExtensions.CustomResourceArgs
-            {
-                ApiVersion = "infrastructure.cluster.x-k8s.io/v1beta1",
-                Kind = "AzureMachineTemplate",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-control-plane-template" },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["template"] = new Dictionary<string, object>
-                        {
-                            ["spec"] = new Dictionary<string, object>
-                            {
-                                ["vmSize"] = "Standard_D4s_v5",
-                                ["osDisk"] = new Dictionary<string, object>
-                                {
-                                    ["osType"] = "Linux",
-                                    ["diskSizeGB"] = 128,
-                                    ["managedDisk"] = new Dictionary<string, object> { ["storageAccountType"] = "Premium_LRS" },
-                                },
-                            },
-                        },
-                    },
-                },
-            }, providerOpts);
-
-            var controlPlane = new ApiExtensions.CustomResource($"{name}-control-plane", new ApiExtensions.CustomResourceArgs
-            {
-                ApiVersion = "controlplane.cluster.x-k8s.io/v1beta1",
-                Kind = "KubeadmControlPlane",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-control-plane" },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["replicas"] = 3,
-                        ["version"] = kubernetesVersion,
-                        ["machineTemplate"] = new Dictionary<string, object>
-                        {
-                            ["infrastructureRef"] = new Dictionary<string, object>
-                            {
-                                ["apiVersion"] = "infrastructure.cluster.x-k8s.io/v1beta1",
-                                ["kind"] = "AzureMachineTemplate",
-                                ["name"] = $"{name}-control-plane-template",
-                            },
-                        },
-                        ["kubeadmConfigSpec"] = new Dictionary<string, object>
-                        {
-                            ["clusterConfiguration"] = new Dictionary<string, object>(),
-                            ["initConfiguration"] = new Dictionary<string, object>
-                            {
-                                ["nodeRegistration"] = new Dictionary<string, object>
-                                {
-                                    ["kubeletExtraArgs"] = new Dictionary<string, object> { ["cloud-provider"] = "external" },
-                                },
-                            },
-                            ["joinConfiguration"] = new Dictionary<string, object>
-                            {
-                                ["nodeRegistration"] = new Dictionary<string, object>
-                                {
-                                    ["kubeletExtraArgs"] = new Dictionary<string, object> { ["cloud-provider"] = "external" },
-                                },
-                            },
-                        },
-                    },
-                },
-            }, providerOpts);
-
-            // Worker MachineDeployment backed by the Hetzner Cloud infrastructure
-            // provider (CAPH) — this is what actually creates the Hetzner servers.
-            var hetznerWorkers = new ApiExtensions.CustomResource($"{name}-hetzner-workers", new ApiExtensions.CustomResourceArgs
-            {
-                ApiVersion = "cluster.x-k8s.io/v1beta1",
-                Kind = "MachineDeployment",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-hetzner-md" },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["clusterName"] = name,
-                        ["replicas"] = workerCount,
-                        ["template"] = new Dictionary<string, object>
-                        {
-                            ["spec"] = new Dictionary<string, object>
-                            {
-                                ["clusterName"] = name,
-                                ["infrastructureRef"] = new Dictionary<string, object>
-                                {
-                                    ["apiVersion"] = "infrastructure.cluster.x-k8s.io/v1beta1",
-                                    ["kind"] = "HCloudMachineTemplate",
-                                    ["name"] = $"{name}-hetzner-template",
-                                },
-                            },
-                        },
-                    },
-                },
-            }, providerOpts);
-
-            var hetznerMachineTemplate = new ApiExtensions.CustomResource($"{name}-hetzner-template", new ApiExtensions.CustomResourceArgs
-            {
-                ApiVersion = "infrastructure.cluster.x-k8s.io/v1beta1",
-                Kind = "HCloudMachineTemplate",
-                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-hetzner-template" },
-                OtherFields =
-                {
-                    ["spec"] = new Dictionary<string, object>
-                    {
-                        ["template"] = new Dictionary<string, object>
-                        {
-                            ["spec"] = new Dictionary<string, object>
-                            {
-                                ["type"] = hetznerServerType,
-                                ["imageName"] = "ubuntu-22.04",
-                            },
-                        },
-                    },
-                },
+                Yaml = $@"
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: {name}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: [""192.168.0.0/16""]
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: {name}-control-plane
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureCluster
+    name: {name}-azure
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureCluster
+metadata:
+  name: {name}-azure
+spec:
+  location: {azureLocation}
+  resourceGroup: {name}-workload-rg
+  networkSpec:
+    vnet:
+      name: {name}-vnet
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureMachineTemplate
+metadata:
+  name: {name}-control-plane-template
+spec:
+  template:
+    spec:
+      vmSize: Standard_D4s_v5
+      osDisk:
+        osType: Linux
+        diskSizeGB: 128
+        managedDisk:
+          storageAccountType: Premium_LRS
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: {name}-control-plane
+spec:
+  replicas: 3
+  version: {kubernetesVersion}
+  machineTemplate:
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: AzureMachineTemplate
+      name: {name}-control-plane-template
+  kubeadmConfigSpec:
+    clusterConfiguration: {{}}
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: external
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: external
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: {name}-hetzner-md
+spec:
+  clusterName: {name}
+  replicas: {workerCount}
+  template:
+    spec:
+      clusterName: {name}
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: HCloudMachineTemplate
+        name: {name}-hetzner-template
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: HCloudMachineTemplate
+metadata:
+  name: {name}-hetzner-template
+spec:
+  template:
+    spec:
+      type: {hetznerServerType}
+      imageName: ubuntu-22.04
+",
             }, providerOpts);
         }
     }
