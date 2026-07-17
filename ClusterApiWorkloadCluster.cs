@@ -23,7 +23,8 @@ namespace HybridCluster
             Input<string> hcloudToken,
             int workerCount,
             string hetznerServerType,
-            string azureLocation)
+            string azureLocation,
+            string kubernetesVersion = "v1.29.4")
         {
             var providerOpts = new CustomResourceOptions { Provider = managementClusterProvider };
 
@@ -83,6 +84,81 @@ namespace HybridCluster
                         ["networkSpec"] = new Dictionary<string, object>
                         {
                             ["vnet"] = new Dictionary<string, object> { ["name"] = $"{name}-vnet" },
+                        },
+                    },
+                },
+            }, providerOpts);
+
+            // These two resources were previously missing entirely: the
+            // Cluster CR above sets controlPlaneRef to a KubeadmControlPlane
+            // named "{name}-control-plane" that nothing ever created, so
+            // CAPI had a dangling reference it could never reconcile.
+            // Control-plane machines run on Azure (via CAPZ), same as the
+            // management cluster itself -- workers are the Hetzner side,
+            // declared further down.
+            var controlPlaneMachineTemplate = new ApiExtensions.CustomResource($"{name}-control-plane-template", new ApiExtensions.CustomResourceArgs
+            {
+                ApiVersion = "infrastructure.cluster.x-k8s.io/v1beta1",
+                Kind = "AzureMachineTemplate",
+                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-control-plane-template" },
+                OtherFields =
+                {
+                    ["spec"] = new Dictionary<string, object>
+                    {
+                        ["template"] = new Dictionary<string, object>
+                        {
+                            ["spec"] = new Dictionary<string, object>
+                            {
+                                ["vmSize"] = "Standard_D4s_v5",
+                                ["osDisk"] = new Dictionary<string, object>
+                                {
+                                    ["osType"] = "Linux",
+                                    ["diskSizeGB"] = 128,
+                                    ["managedDisk"] = new Dictionary<string, object> { ["storageAccountType"] = "Premium_LRS" },
+                                },
+                            },
+                        },
+                    },
+                },
+            }, providerOpts);
+
+            var controlPlane = new ApiExtensions.CustomResource($"{name}-control-plane", new ApiExtensions.CustomResourceArgs
+            {
+                ApiVersion = "controlplane.cluster.x-k8s.io/v1beta1",
+                Kind = "KubeadmControlPlane",
+                Metadata = new Kubernetes.Types.Inputs.Meta.V1.ObjectMetaArgs { Name = $"{name}-control-plane" },
+                OtherFields =
+                {
+                    ["spec"] = new Dictionary<string, object>
+                    {
+                        ["replicas"] = 3,
+                        ["version"] = kubernetesVersion,
+                        ["machineTemplate"] = new Dictionary<string, object>
+                        {
+                            ["infrastructureRef"] = new Dictionary<string, object>
+                            {
+                                ["apiVersion"] = "infrastructure.cluster.x-k8s.io/v1beta1",
+                                ["kind"] = "AzureMachineTemplate",
+                                ["name"] = $"{name}-control-plane-template",
+                            },
+                        },
+                        ["kubeadmConfigSpec"] = new Dictionary<string, object>
+                        {
+                            ["clusterConfiguration"] = new Dictionary<string, object>(),
+                            ["initConfiguration"] = new Dictionary<string, object>
+                            {
+                                ["nodeRegistration"] = new Dictionary<string, object>
+                                {
+                                    ["kubeletExtraArgs"] = new Dictionary<string, object> { ["cloud-provider"] = "external" },
+                                },
+                            },
+                            ["joinConfiguration"] = new Dictionary<string, object>
+                            {
+                                ["nodeRegistration"] = new Dictionary<string, object>
+                                {
+                                    ["kubeletExtraArgs"] = new Dictionary<string, object> { ["cloud-provider"] = "external" },
+                                },
+                            },
                         },
                     },
                 },

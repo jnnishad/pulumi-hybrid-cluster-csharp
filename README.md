@@ -60,12 +60,16 @@ docs/architecture.md              Diagram + design rationale
 - [`terraform-multicloud-infra`](https://github.com/jnnishad/terraform-multicloud-infra) — the Terraform/HCL equivalent for single-cloud AKS/EKS
 - [`k8s-observability-stack`](https://github.com/jnnishad/k8s-observability-stack) — what gets deployed onto the resulting workload cluster
 
+## Status
+
+CI (`dotnet build`) now runs on every push -- it wasn't wired up
+initially, and would have caught a real bug sooner: the `Cluster`
+custom resource's `controlPlaneRef` pointed at a `KubeadmControlPlane`
+named `{name}-control-plane` that nothing in the program ever actually
+created, so Cluster API had a dangling reference it could never
+reconcile. Fixed by adding the missing `KubeadmControlPlane` and its
+backing `AzureMachineTemplate` in `ClusterApiWorkloadCluster.cs`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-<!-- JN -->
-
-<!-- JN -->
-
-<!-- JN -->
